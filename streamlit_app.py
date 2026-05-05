@@ -1,12 +1,11 @@
 """
 streamlit_app.py — Spam Email Classifier UI
-
-Calls backend/core.py directly (no HTTP/FastAPI needed for local use).
-To run:  streamlit run streamlit_app.py
+Hybrid system: BERT-tiny (HuggingFace) + Keyword Rules Engine
+No training required. No Kaggle dataset.
+Run: streamlit run streamlit_app.py
 """
 
 import io
-import json
 import sys
 from pathlib import Path
 
@@ -19,317 +18,274 @@ if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from backend.core import (
-    DEFAULT_DATA_PATH,
-    DEFAULT_MODEL_PATH,
-    DEFAULT_THRESHOLD_CONFIG_PATH,
-    bert_predict_single_email,
+    DEFAULT_TEST_DATA_PATH,
     evaluate,
+    get_rules_info,
     predict_csv_batch,
     predict_single_email,
-    train,
-    tune_threshold,
 )
 
-# ── Page config ─────────────────────────────────────────────────────────────
+# ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Email Spam Checker",
+    page_title="Email Spam Classifier",
     page_icon="📧",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ── Custom CSS ───────────────────────────────────────────────────────────────
-st.markdown(
-    """
-    <style>
-    .main { background-color: #0f0f1a; }
-    .stTextArea textarea { font-family: monospace; font-size: 14px; }
-    .metric-card { background: #1a1a2e; border-radius: 12px; padding: 16px; }
-    div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: 700; }
-    .spam-badge { background: #ff4b4b; color: white; border-radius: 8px;
-                  padding: 8px 20px; font-size: 1.4rem; font-weight: 700; }
-    .ham-badge  { background: #21c55d; color: white; border-radius: 8px;
-                  padding: 8px 20px; font-size: 1.4rem; font-weight: 700; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.main { background-color: #0f0f1a; }
+.stTextArea textarea { font-family: monospace; font-size: 14px; }
+div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: 700; }
+.spam-badge {
+    background: linear-gradient(135deg, #ff4b4b, #c0392b);
+    color: white; border-radius: 10px;
+    padding: 10px 24px; font-size: 1.5rem; font-weight: 700;
+    display: inline-block; margin-bottom: 8px;
+    box-shadow: 0 4px 15px rgba(255,75,75,0.4);
+}
+.ham-badge {
+    background: linear-gradient(135deg, #21c55d, #16a34a);
+    color: white; border-radius: 10px;
+    padding: 10px 24px; font-size: 1.5rem; font-weight: 700;
+    display: inline-block; margin-bottom: 8px;
+    box-shadow: 0 4px 15px rgba(33,197,93,0.4);
+}
+.rule-chip {
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 6px; padding: 4px 10px;
+    font-size: 0.8rem; color: #94a3b8;
+    display: inline-block; margin: 2px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# ── Sidebar ─────────────────────────────────────────────────────────────────
+# ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("⚙️ Settings")
+    st.title("📧 Spam Classifier")
+    st.caption("BERT + Keyword Rules · No training needed")
     st.divider()
 
-    model_path = st.text_input("Model path", value=DEFAULT_MODEL_PATH)
-    threshold_config = st.text_input("Threshold config", value=DEFAULT_THRESHOLD_CONFIG_PATH)
-
-    st.subheader("🧠 Model type")
-    model_type = st.radio(
-        "Choose algorithm",
-        options=["tfidf_lr", "count_nb", "bert_tiny"],
-        format_func=lambda x: {
-            "tfidf_lr":   "TF-IDF + Logistic Regression (recommended)",
-            "count_nb":   "CountVectorizer + Naive Bayes (~98% on SMS spam)",
-            "bert_tiny":  "🤗 BERT-tiny (HuggingFace, pre-trained)",
-        }[x],
-        index=0,
-        help="BERT downloads ~17MB on first use and is cached. No GPU needed.",
+    st.subheader("⚙️ Settings")
+    review_threshold = st.slider(
+        "Review threshold",
+        min_value=0.05, max_value=0.99, value=0.60, step=0.01,
+        help="Predictions below this confidence are flagged for human review.",
     )
-    if model_type == "bert_tiny":
-        st.info("⚡ BERT mode: no training needed. First run downloads the model (~17MB).")
-
-    st.subheader("📐 Review Threshold")
-    use_manual = st.checkbox("Override threshold manually", value=False)
-    manual_threshold: float | None = None
-    if use_manual:
-        manual_threshold = st.slider("Threshold", 0.05, 0.99, 0.65, 0.01,
-                                     help="Predictions below this confidence will be flagged for review.")
 
     st.divider()
-    st.caption("Built with 🐍 scikit-learn + 🤗 HuggingFace + Streamlit")
+    st.subheader("🔬 System Info")
+    st.markdown("""
+- 🤗 **BERT-tiny** (HuggingFace)
+- 📋 **48 keyword rules** across 6 categories
+- 🚫 No Kaggle data used
+- ✅ Custom hand-crafted test set
+    """)
 
-# ── Main header ──────────────────────────────────────────────────────────────
-st.title("📧 Email Spam Checker")
-st.caption("Paste an email, upload a CSV, or train a new model — all in one place.")
+    # Show keyword rules in expander
+    with st.expander("📋 All Keyword Rules"):
+        rules_info = get_rules_info()
+        for cat in rules_info["categories"]:
+            st.markdown(f"**{cat.upper()}**")
+            for r in rules_info["rules_by_category"][cat]:
+                st.markdown(
+                    f"<span class='rule-chip'>{r['name']} ({r['weight']:.0%})</span>",
+                    unsafe_allow_html=True,
+                )
+            st.write("")
+
+# ── Header ───────────────────────────────────────────────────────────────────
+st.title("📧 Email Spam Classifier")
+st.caption("Hybrid system: BERT deep learning + hand-crafted keyword rules. No Kaggle dataset.")
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_single, tab_batch, tab_train = st.tabs(
-    ["🔍 Single Email", "📂 Batch CSV", "🎓 Train & Evaluate"]
+tab_single, tab_batch, tab_evaluate = st.tabs(
+    ["🔍 Single Email", "📂 Batch CSV", "📊 Evaluate & Rules"]
 )
 
 # ════════════════════════════════════════════════════════════════════════════ #
-# TAB 1 — Single Email                                                        #
+# TAB 1 — Single Email                                                         #
 # ════════════════════════════════════════════════════════════════════════════ #
 with tab_single:
     st.subheader("Check a single email")
     email_text = st.text_area(
         "Paste email body here",
-        height=250,
-        placeholder="Congratulations! You have won a free iPhone. Click here to claim...",
+        height=260,
+        placeholder="Paste any email content here — newsletter, phishing attempt, work email...",
     )
 
-    if st.button("🔎 Check Email", type="primary", use_container_width=True):
+    if st.button("🔎 Classify Email", type="primary", use_container_width=True):
         if not email_text.strip():
             st.warning("Please paste some email text first.")
-        elif model_type != "bert_tiny" and not Path(model_path).exists():
-            st.error("⚠️ Model not found. Go to **Train & Evaluate** tab and train a model first.")
         else:
-            spinner_msg = "Running BERT inference... (first run downloads ~17MB)" if model_type == "bert_tiny" else "Classifying..."
-            with st.spinner(spinner_msg):
+            with st.spinner("Running BERT inference + keyword analysis..."):
                 try:
-                    if model_type == "bert_tiny":
-                        result = bert_predict_single_email(
-                            text=email_text,
-                            review_threshold=manual_threshold or 0.6,
-                        )
-                        result["ml_spam_probability"] = result.pop("bert_spam_probability", None)
-                    else:
-                        result = predict_single_email(
-                            text=email_text,
-                            model_path=model_path,
-                            review_threshold=manual_threshold,
-                            threshold_config_path=threshold_config or None,
-                        )
+                    result = predict_single_email(email_text, review_threshold=review_threshold)
                 except Exception as exc:
                     st.error(f"Error: {exc}")
                     result = None
 
             if result:
-                prediction = result["prediction"]
-                confidence = float(result["confidence"])
+                prediction  = result["prediction"]
+                confidence  = float(result["confidence"])
                 needs_review = bool(result["needs_review"])
-                active_threshold = float(result["review_threshold"])
-                ml_prob = result.get("ml_spam_probability", None)
-                signals = result.get("email_signals_detected", [])
+                bert_prob   = result.get("bert_spam_probability", 0.0)
+                signals     = result.get("email_signals_detected", [])
 
                 st.divider()
+
+                # Verdict badge
                 if prediction == "spam":
                     st.markdown('<div class="spam-badge">🚨 SPAM</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="ham-badge">✅ NOT SPAM</div>', unsafe_allow_html=True)
 
                 st.write("")
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Confidence", f"{confidence:.1%}")
-                c2.metric("Threshold", f"{active_threshold:.2f}")
-                c3.metric("Needs Review", "⚠️ Yes" if needs_review else "✅ No")
+                c2.metric("BERT Score", f"{bert_prob:.1%}")
+                c3.metric("Signals Found", len(signals))
+                c4.metric("Needs Review", "⚠️ Yes" if needs_review else "✅ No")
 
-                # Hybrid breakdown panel
+                # Keyword signal breakdown
                 if signals:
-                    ml_label = "spam" if (ml_prob or 0) >= 0.5 else "not spam"
+                    cats = sorted({s["category"] for s in signals})
                     st.warning(
-                        f"⚡ **Email signal boost applied** — "
-                        f"ML alone said **{ml_label}** ({ml_prob:.1%} spam prob). "
-                        f"**{len(signals)} marketing signal(s)** detected → boosted to spam."
+                        f"⚡ **Keyword boost applied** — BERT alone: {bert_prob:.1%}. "
+                        f"**{len(signals)} signal(s)** from: {', '.join(cats)}."
                     )
-                    with st.expander(f"📋 Why was this flagged? ({len(signals)} signals)", expanded=True):
-                        for sig in signals:
-                            st.markdown(
-                                f"- **`{sig['name']}`** *(boost: {sig['weight']:.0%})* — {sig['description']}"
-                            )
-                elif ml_prob is not None:
-                    st.caption(f"🤖 ML spam probability: {ml_prob:.1%} | No marketing email signals detected.")
+                    with st.expander(f"📋 Why is this spam? ({len(signals)} keyword signals)", expanded=True):
+                        # Group by category
+                        by_cat: dict[str, list] = {}
+                        for s in signals:
+                            by_cat.setdefault(s["category"], []).append(s)
+                        for cat, rules in by_cat.items():
+                            st.markdown(f"**{cat.upper()}**")
+                            for r in rules:
+                                st.markdown(
+                                    f"- **`{r['name']}`** *(boost: {r['weight']:.0%})* — {r['description']}"
+                                )
+                else:
+                    st.info(f"🤖 BERT-only prediction (no keyword signals detected). Spam probability: {bert_prob:.1%}")
 
-                with st.expander("Raw result JSON"):
+                with st.expander("Raw JSON result"):
                     st.json(result)
 
-
 # ════════════════════════════════════════════════════════════════════════════ #
-# TAB 2 — Batch CSV                                                           #
+# TAB 2 — Batch CSV                                                            #
 # ════════════════════════════════════════════════════════════════════════════ #
 with tab_batch:
     st.subheader("Classify a CSV file")
-    st.caption("Upload a CSV with a column containing email text. Each row gets a prediction.")
+    st.caption("Upload a CSV with an email column. We'll classify every row.")
 
-    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-    text_col = st.text_input("Text column name", value="Message",
-                              help="The column in your CSV that contains the email body.")
+    uploaded_file = st.file_uploader(
+        "Upload CSV", type=["csv"],
+        help="Must contain a column named 'message', 'text', 'email', or 'body'."
+    )
 
-    if st.button("▶️ Run Batch Prediction", use_container_width=True):
-        if uploaded_file is None:
-            st.warning("Please upload a CSV file.")
-        elif not Path(model_path).exists():
-            st.error("⚠️ Model not found. Train a model first.")
-        else:
-            # Save uploaded file to a temp location inside project
-            tmp_input = PROJECT_ROOT / "data" / "processed" / "batch_upload.csv"
-            tmp_input.parent.mkdir(parents=True, exist_ok=True)
-            tmp_input.write_bytes(uploaded_file.read())
+    if uploaded_file:
+        df_preview = pd.read_csv(uploaded_file)
+        st.write(f"**{len(df_preview)} rows detected.** Preview:")
+        st.dataframe(df_preview.head(5), use_container_width=True)
+        uploaded_file.seek(0)
 
-            tmp_output = PROJECT_ROOT / "data" / "processed" / "batch_predictions.csv"
+        if st.button("🚀 Classify All Rows", type="primary", use_container_width=True):
+            tmp_in  = PROJECT_ROOT / "data" / "processed" / "_batch_input.csv"
+            tmp_out = PROJECT_ROOT / "data" / "processed" / "_batch_output.csv"
+            tmp_in.parent.mkdir(parents=True, exist_ok=True)
+            tmp_in.write_bytes(uploaded_file.read())
 
-            with st.spinner(f"Running predictions on {uploaded_file.name}..."):
+            with st.spinner(f"Classifying {len(df_preview)} emails with BERT..."):
                 try:
-                    batch_result = predict_csv_batch(
-                        input_csv=str(tmp_input),
-                        output_csv=str(tmp_output),
-                        model_path=model_path,
-                        text_column=text_col,
-                        review_threshold=manual_threshold,
-                        threshold_config_path=threshold_config or None,
+                    summary = predict_csv_batch(
+                        input_csv=str(tmp_in),
+                        output_csv=str(tmp_out),
+                        review_threshold=review_threshold,
                     )
                 except Exception as exc:
                     st.error(f"Error: {exc}")
-                    batch_result = None
+                    summary = None
 
-            if batch_result:
-                st.success(
-                    f"✅ Done! {batch_result['rows']} rows classified. "
-                    f"{batch_result['rows_needing_review']} flagged for review."
-                )
+            if summary:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Emails", summary["rows"])
+                c2.metric("🚨 Spam", summary["spam_count"])
+                c3.metric("✅ Ham", summary["ham_count"])
 
-                result_df = pd.read_csv(tmp_output)
+                result_df = pd.read_csv(tmp_out)
                 st.dataframe(result_df, use_container_width=True)
 
                 csv_bytes = result_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    label="⬇️ Download Predictions CSV",
+                    "⬇️ Download Results CSV",
                     data=csv_bytes,
-                    file_name="spam_predictions.csv",
+                    file_name="spam_results.csv",
                     mime="text/csv",
-                    use_container_width=True,
                 )
 
 # ════════════════════════════════════════════════════════════════════════════ #
-# TAB 3 — Train & Evaluate                                                    #
+# TAB 3 — Evaluate & Rules                                                     #
 # ════════════════════════════════════════════════════════════════════════════ #
-with tab_train:
-    st.subheader("Train a new model")
+with tab_evaluate:
+    st.subheader("📊 System Evaluation")
+    st.caption(
+        "Evaluate the BERT + keyword system against our **custom hand-crafted test set** "
+        "(50 emails — not from Kaggle, written from scratch)."
+    )
 
-    train_data_path = st.text_input("Training data path", value=DEFAULT_DATA_PATH)
+    if st.button("▶️ Run Evaluation", type="primary", use_container_width=True):
+        with st.spinner("Running BERT + keyword rules on 50 test emails..."):
+            try:
+                report = evaluate(review_threshold=review_threshold)
+            except Exception as exc:
+                st.error(f"Evaluation error: {exc}")
+                report = None
 
-    col_train, col_eval, col_tune = st.columns(3)
+        if report:
+            st.divider()
+            st.subheader("Results")
 
-    # ── Train ────────────────────────────────────────────────────────────────
-    with col_train:
-        if st.button("🎓 Train Model", use_container_width=True):
-            if not Path(train_data_path).exists():
-                st.error(f"File not found: {train_data_path}")
-            else:
-                with st.spinner(f"Training {model_type} model..."):
-                    try:
-                        report = train(
-                            data_path=train_data_path,
-                            model_path=model_path,
-                            model_type=model_type,
-                        )
-                    except Exception as exc:
-                        st.error(f"Training failed: {exc}")
-                        report = None
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Accuracy",  f"{report['accuracy']:.1%}")
+            c2.metric("Precision", f"{report['precision']:.1%}")
+            c3.metric("Recall",    f"{report['recall']:.1%}")
+            c4.metric("F1 Score",  f"{report['f1']:.1%}")
+            c5.metric("Correct",   f"{report['correct']}/{report['total']}")
 
-                if report:
-                    st.success("✅ Model trained and saved!")
-                    _tm = report.get("test_metrics", {})
-                    st.metric("Test Accuracy", f"{_tm.get('accuracy', 0):.1%}")
-                    st.metric("F1 (Spam)", f"{_tm.get('f1_spam', 0):.3f}")
-                    with st.expander("Full training report"):
-                        st.json(report)
+            # Confusion matrix
+            st.subheader("Confusion Matrix")
+            cm = report["confusion"]
+            cm_df = pd.DataFrame(
+                [[cm["tp"], cm["fp"]], [cm["fn"], cm["tn"]]],
+                index=["Actual: Spam", "Actual: Ham"],
+                columns=["Predicted: Spam", "Predicted: Ham"],
+            )
+            st.table(cm_df)
 
-    # ── Evaluate ─────────────────────────────────────────────────────────────
-    with col_eval:
-        if st.button("📊 Evaluate", use_container_width=True):
-            if not Path(model_path).exists():
-                st.error("Train a model first.")
-            elif not Path(train_data_path).exists():
-                st.error(f"File not found: {train_data_path}")
-            else:
-                with st.spinner("Evaluating..."):
-                    try:
-                        eval_result = evaluate(
-                            data_path=train_data_path,
-                            model_path=model_path,
-                        )
-                    except Exception as exc:
-                        st.error(f"Evaluation failed: {exc}")
-                        eval_result = None
+            # Per-row results
+            st.subheader("Per-Email Results")
+            rows_df = pd.DataFrame(report["per_row"])
+            rows_df["✓"] = rows_df["correct"].apply(lambda x: "✅" if x else "❌")
+            rows_df["bert_prob"] = rows_df["bert_prob"].apply(lambda x: f"{x:.1%}")
+            rows_df["confidence"] = rows_df["confidence"].apply(lambda x: f"{x:.1%}")
+            st.dataframe(
+                rows_df[["✓", "text", "true_label", "predicted", "confidence", "bert_prob", "keyword_signals"]],
+                use_container_width=True,
+            )
 
-                if eval_result:
-                    st.success("✅ Evaluation complete!")
-                    _m = eval_result.get("metrics", {})
+    st.divider()
+    st.subheader("📋 Keyword Rules Engine")
+    st.caption(f"48 rules across 6 categories. All hand-crafted. No training data needed.")
 
-                    # Bar chart
-                    chart_data = {
-                        "Metric": ["Accuracy", "Precision", "Recall", "F1"],
-                        "Score": [
-                            _m.get("accuracy", 0),
-                            _m.get("precision_spam", 0),
-                            _m.get("recall_spam", 0),
-                            _m.get("f1_spam", 0),
-                        ],
-                    }
-                    chart_df = pd.DataFrame(chart_data).set_index("Metric")
-                    st.bar_chart(chart_df, use_container_width=True, color="#4f8ef7")
-
-                    with st.expander("Full evaluation report"):
-                        st.json(eval_result)
-
-    # ── Tune Threshold ────────────────────────────────────────────────────────
-    with col_tune:
-        target_rate = st.number_input(
-            "Target review rate", min_value=0.01, max_value=0.99, value=0.20, step=0.05,
-            help="What fraction of predictions should be flagged for manual review?",
-        )
-        if st.button("🎯 Tune Threshold", use_container_width=True):
-            if not Path(model_path).exists():
-                st.error("Train a model first.")
-            elif not Path(train_data_path).exists():
-                st.error(f"File not found: {train_data_path}")
-            else:
-                with st.spinner("Finding optimal threshold..."):
-                    try:
-                        tune_result = tune_threshold(
-                            data_path=train_data_path,
-                            model_path=model_path,
-                            target_review_rate=target_rate,
-                            output_path=threshold_config,
-                        )
-                    except Exception as exc:
-                        st.error(f"Tuning failed: {exc}")
-                        tune_result = None
-
-                if tune_result:
-                    st.success("✅ Threshold tuned and saved!")
-                    st.metric("Suggested Threshold", f"{tune_result['suggested_threshold']:.3f}")
-                    st.metric("Actual Review Rate", f"{tune_result['actual_review_rate']:.1%}")
-                    with st.expander("Full tuning report"):
-                        st.json(tune_result)
+    rules_info = get_rules_info()
+    cols = st.columns(2)
+    for i, cat in enumerate(rules_info["categories"]):
+        with cols[i % 2]:
+            with st.expander(f"**{cat.upper()}** ({len(rules_info['rules_by_category'][cat])} rules)"):
+                for r in rules_info["rules_by_category"][cat]:
+                    st.markdown(f"**`{r['name']}`** *(weight: {r['weight']:.0%})*")
+                    st.caption(r["description"])

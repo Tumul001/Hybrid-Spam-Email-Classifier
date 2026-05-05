@@ -1,8 +1,18 @@
-﻿"""Spam detector package."""
+"""Spam detector package — BERT + Keyword Rules hybrid classifier."""
 
-from .evaluate import run_evaluation
-from .predict import predict_batch, predict_text
-from .threshold import tune_review_threshold
-from .train import run_training
+from .bert_model import bert_predict_text
+from .keyword_rules import match_rules, combined_keyword_boost, SPAM_RULES, CATEGORIES, RULE_COUNT
+from .predict import predict_text, predict_batch
+from .preprocess import clean_text
 
-__all__ = ["run_training", "run_evaluation", "predict_text", "predict_batch", "tune_review_threshold"]
+__all__ = [
+    "bert_predict_text",
+    "match_rules",
+    "combined_keyword_boost",
+    "SPAM_RULES",
+    "CATEGORIES",
+    "RULE_COUNT",
+    "predict_text",
+    "predict_batch",
+    "clean_text",
+]

@@ -1,225 +1,143 @@
-import json
-from pathlib import Path
+"""
+predict.py — Hybrid spam classifier: BERT + Keyword Rules.
+
+Architecture:
+    1. BERT-tiny (HuggingFace, pre-trained) provides semantic spam probability.
+    2. Keyword rules engine boosts probability for explicit, predictable patterns.
+    3. Final score = weighted blend of BERT + keyword boost (noisy-OR).
+
+No sklearn model or training data required.
+"""
+
+from __future__ import annotations
 from typing import Any
 
 import pandas as pd
+from pathlib import Path
 
-from .io_utils import load_model
-from .preprocess import clean_text, email_spam_signals
+from .bert_model import bert_predict_text
+from .keyword_rules import match_rules, combined_keyword_boost, SpamRule
+
 
 DEFAULT_REVIEW_THRESHOLD = 0.6
 
 
-def _validate_review_threshold(review_threshold: float) -> None:
-    if not 0.0 < review_threshold < 1.0:
-        raise ValueError("review_threshold must be between 0 and 1.")
-
-
-def _load_threshold_from_config(threshold_config_path: str | None) -> float | None:
-    if not threshold_config_path:
-        return None
-
-    config_path = Path(threshold_config_path)
-    if not config_path.exists():
-        return None
-
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid threshold config JSON: {threshold_config_path}") from exc
-
-    if "suggested_threshold" not in payload:
-        raise ValueError(f"Missing suggested_threshold in threshold config: {threshold_config_path}")
-
-    try:
-        threshold = float(payload["suggested_threshold"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("suggested_threshold in threshold config must be numeric.") from exc
-
-    _validate_review_threshold(threshold)
-    return threshold
-
-
-def resolve_review_threshold(
-    review_threshold: float | None = None,
-    threshold_config_path: str | None = "models/review_threshold.json",
-) -> float:
-    if review_threshold is not None:
-        _validate_review_threshold(review_threshold)
-        return review_threshold
-
-    configured_threshold = _load_threshold_from_config(threshold_config_path)
-    if configured_threshold is not None:
-        return configured_threshold
-
-    return DEFAULT_REVIEW_THRESHOLD
-
-
-def _ml_spam_probability(model: Any, text: str) -> float:
-    """Return the ML model's probability that text is spam (0.0–1.0)."""
-    if not hasattr(model, "predict_proba"):
-        # No probability support — use hard prediction
-        prediction = model.predict([text])[0]
-        return 1.0 if prediction == "spam" else 0.0
-
-    probabilities = model.predict_proba([text])[0]
-    class_to_idx = {label: idx for idx, label in enumerate(model.classes_)}
-    return float(probabilities[class_to_idx["spam"]])
-
-
-def _hybrid_spam_probability(ml_prob: float, text: str) -> tuple[float, list[dict]]:
+def _hybrid_score(bert_prob: float, text: str) -> tuple[float, list[SpamRule]]:
     """
-    Combine ML probability with rule-based email signal detection.
+    Combine BERT probability with keyword rule boost.
 
-    Strategy:
-    - Detect structural marketing-email signals (unsubscribe, newsletter, etc.)
-    - Each signal contributes a weighted boost toward spam
-    - Final probability = max(ml_prob, boosted_prob) so we never downgrade a
-      confident ML spam call, but we can upgrade a missed email newsletter.
+    Strategy (noisy-OR blend):
+    - Keywords run on RAW text (before cleaning strips signal words).
+    - If signals found: final = max(bert_prob, 0.6*keyword_boost + 0.4*bert_prob)
+    - If no signals:   final = bert_prob (BERT alone)
 
-    Returns:
-        (final_probability, list of detected signal dicts)
+    This ensures we never downgrade a confident BERT spam call, but we can
+    upgrade newsletters/phishing that BERT rates as borderline.
     """
-    signals = email_spam_signals(text)
-    if not signals:
-        return ml_prob, []
+    matched = match_rules(text)
+    if not matched:
+        return bert_prob, []
 
-    # Aggregate signal boost — signals are partially independent, so we
-    # use a "noisy-OR" combination: each signal independently adds evidence.
-    # boost = 1 - product(1 - w_i)
-    combined_boost = 1.0
-    for sig in signals:
-        combined_boost *= (1.0 - sig.weight)
-    signal_boost = 1.0 - combined_boost  # 0.0–1.0
-
-    # Blend: if signals are strong, override ML; otherwise take the max.
-    # Weight: 60% signal, 40% ML when signals present (signals are very reliable).
-    boosted_prob = 0.6 * signal_boost + 0.4 * ml_prob
-    final_prob = max(ml_prob, boosted_prob)
-
-    signal_dicts = [
-        {"name": s.name, "description": s.description, "weight": round(s.weight, 2)}
-        for s in signals
-    ]
-    return final_prob, signal_dicts
-
-
-def _prediction_confidences(model: Any, texts: list[str], predictions: list[str]) -> list[float]:
-    if not hasattr(model, "predict_proba"):
-        return [1.0 for _ in texts]
-
-    probabilities = model.predict_proba(texts)
-    class_to_idx = {label: index for index, label in enumerate(model.classes_)}
-
-    confidences: list[float] = []
-    for idx, predicted_label in enumerate(predictions):
-        label_idx = class_to_idx[predicted_label]
-        confidences.append(float(probabilities[idx][label_idx]))
-    return confidences
-
-
-def _resolve_text_column(df: pd.DataFrame, text_column: str) -> str:
-    if text_column in df.columns:
-        return text_column
-
-    lower_map = {column.lower(): column for column in df.columns}
-    candidates = [text_column, "text", "message", "body", "email", "content"]
-    for candidate in candidates:
-        key = str(candidate).lower()
-        if key in lower_map:
-            return lower_map[key]
-
-    raise ValueError(f"Missing text column: {text_column}")
+    keyword_boost = combined_keyword_boost(matched)
+    blended = 0.6 * keyword_boost + 0.4 * bert_prob
+    final = max(bert_prob, blended)
+    return final, matched
 
 
 def predict_text(
     text: str,
-    model_path: str = "models/spam_model.joblib",
-    review_threshold: float | None = None,
-    threshold_config_path: str | None = "models/review_threshold.json",
+    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
 ) -> dict[str, Any]:
-    resolved_threshold = resolve_review_threshold(review_threshold, threshold_config_path)
-    model = load_model(Path(model_path))
-    prepared_text = clean_text(text)
+    """
+    Classify a single email using BERT + keyword rules.
 
-    # Step 1: ML probability
-    ml_spam_prob = _ml_spam_probability(model, prepared_text)
+    Returns:
+        prediction          : "spam" | "not spam"
+        confidence          : float — how confident we are in the prediction
+        needs_review        : bool  — True if confidence < review_threshold
+        review_threshold    : float
+        bert_spam_probability   : raw BERT output
+        email_signals_detected  : list of matched keyword rule dicts
+    """
+    bert_result = bert_predict_text(text)
+    bert_prob = bert_result["spam_probability"]
 
-    # Step 2: Hybrid — boost with email signal rules (run on RAW text so we
-    # catch "Unsubscribe", "View in browser" before they're stripped)
-    final_spam_prob, detected_signals = _hybrid_spam_probability(ml_spam_prob, text)
+    final_prob, matched_rules = _hybrid_score(bert_prob, text)
 
-    # Step 3: Derive label and confidence from final probability
-    if final_spam_prob >= 0.5:
+    if final_prob >= 0.5:
         prediction = "spam"
-        confidence = final_spam_prob
+        confidence = final_prob
     else:
         prediction = "not spam"
-        confidence = 1.0 - final_spam_prob
-
-    needs_review = confidence < resolved_threshold
+        confidence = 1.0 - final_prob
 
     return {
         "text": text,
         "prediction": prediction,
         "confidence": round(confidence, 6),
-        "needs_review": needs_review,
-        "review_threshold": resolved_threshold,
-        "ml_spam_probability": round(ml_spam_prob, 6),
-        "email_signals_detected": detected_signals,
+        "needs_review": confidence < review_threshold,
+        "review_threshold": review_threshold,
+        "bert_spam_probability": round(bert_prob, 6),
+        "email_signals_detected": [
+            {
+                "name": r.name,
+                "category": r.category,
+                "description": r.description,
+                "weight": round(r.weight, 2),
+            }
+            for r in matched_rules
+        ],
     }
 
 
 def predict_batch(
     input_csv: str,
     output_csv: str,
-    model_path: str = "models/spam_model.joblib",
-    text_column: str = "text",
-    review_threshold: float | None = None,
-    threshold_config_path: str | None = "models/review_threshold.json",
+    text_column: str = "message",
+    review_threshold: float = DEFAULT_REVIEW_THRESHOLD,
 ) -> dict[str, Any]:
-    resolved_threshold = resolve_review_threshold(review_threshold, threshold_config_path)
+    """
+    Classify all rows in a CSV. Saves results to output_csv.
+    Auto-detects common text column names (message, text, email, body).
+    """
     df = pd.read_csv(Path(input_csv))
-    resolved_text_column = _resolve_text_column(df, text_column)
 
-    model = load_model(Path(model_path))
-    raw_texts = df[resolved_text_column].fillna("").astype(str).tolist()
-    cleaned_texts = [clean_text(t) for t in raw_texts]
+    # Auto-detect text column
+    lower_map = {c.lower(): c for c in df.columns}
+    resolved_col = None
+    for candidate in [text_column, "message", "text", "email", "body", "content"]:
+        if candidate.lower() in lower_map:
+            resolved_col = lower_map[candidate.lower()]
+            break
+    if resolved_col is None:
+        raise ValueError(f"Could not find a text column in {input_csv}. Columns: {list(df.columns)}")
 
-    predictions_out = []
-    confidences_out = []
-    needs_review_out = []
-    signals_count_out = []
+    raw_texts = df[resolved_col].fillna("").astype(str).tolist()
 
-    for raw, cleaned in zip(raw_texts, cleaned_texts):
-        ml_prob = _ml_spam_probability(model, cleaned)
-        final_prob, signals = _hybrid_spam_probability(ml_prob, raw)
+    predictions, confidences, needs_review_list, signal_counts = [], [], [], []
 
-        if final_prob >= 0.5:
-            pred = "spam"
-            conf = final_prob
-        else:
-            pred = "not spam"
-            conf = 1.0 - final_prob
+    for raw in raw_texts:
+        result = predict_text(raw, review_threshold=review_threshold)
+        predictions.append(result["prediction"])
+        confidences.append(result["confidence"])
+        needs_review_list.append(result["needs_review"])
+        signal_counts.append(len(result["email_signals_detected"]))
 
-        predictions_out.append(pred)
-        confidences_out.append(round(conf, 6))
-        needs_review_out.append(conf < resolved_threshold)
-        signals_count_out.append(len(signals))
+    out = df.copy()
+    out["prediction"] = predictions
+    out["confidence"] = confidences
+    out["needs_review"] = needs_review_list
+    out["keyword_signals"] = signal_counts
 
-    output = df.copy()
-    output["prediction"] = predictions_out
-    output["confidence"] = confidences_out
-    output["needs_review"] = needs_review_out
-    output["email_signals"] = signals_count_out
-
-    output_path = Path(output_csv)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output.to_csv(output_path, index=False)
+    out_path = Path(output_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(out_path, index=False)
 
     return {
-        "rows": int(len(output)),
-        "rows_needing_review": int(sum(needs_review_out)),
-        "review_threshold": resolved_threshold,
-        "output_csv": str(output_path),
+        "rows": len(out),
+        "spam_count": predictions.count("spam"),
+        "ham_count": predictions.count("not spam"),
+        "rows_needing_review": sum(needs_review_list),
+        "review_threshold": review_threshold,
+        "output_csv": str(out_path),
     }

@@ -1,31 +1,40 @@
-import pandas as pd
+"""
+test_preprocess.py — Tests for text cleaning utility.
+"""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spam_detector.preprocess import clean_text, normalize_label, prepare_dataframe
-
-
-def test_normalize_label_maps_expected_values() -> None:
-    assert normalize_label("spam") == "spam"
-    assert normalize_label("1") == "spam"
-    assert normalize_label("ham") == "not spam"
-    assert normalize_label("0") == "not spam"
+from spam_detector.preprocess import clean_text
 
 
-def test_clean_text_removes_urls_and_html() -> None:
-    cleaned = clean_text("<b>Hello</b> visit https://example.com now!")
-    assert "http" not in cleaned
-    assert "<b>" not in cleaned
-    assert cleaned == cleaned.lower()
+def test_clean_text_strips_html():
+    result = clean_text("<b>Hello</b> <i>World</i>")
+    assert "<" not in result and ">" not in result
 
 
-def test_prepare_dataframe_accepts_category_message_columns() -> None:
-    df = pd.DataFrame(
-        {
-            "Category": ["spam", "ham"],
-            "Message": ["Win a prize now", "See you at 5"],
-        }
-    )
+def test_clean_text_strips_urls():
+    result = clean_text("Visit https://example.com or www.test.org for details")
+    assert "http" not in result
+    assert "example" not in result
 
-    prepared = prepare_dataframe(df)
 
-    assert list(prepared.columns) == ["text", "label"]
-    assert set(prepared["label"].unique()) == {"spam", "not spam"}
+def test_clean_text_strips_emails():
+    result = clean_text("Contact us at support@company.com for help")
+    assert "@" not in result
+
+
+def test_clean_text_lowercases():
+    result = clean_text("HELLO WORLD")
+    assert result == "hello world"
+
+
+def test_clean_text_handles_none():
+    result = clean_text(None)
+    assert isinstance(result, str)
+    assert result == ""
+
+
+def test_clean_text_collapses_whitespace():
+    result = clean_text("hello    world   test")
+    assert "  " not in result
