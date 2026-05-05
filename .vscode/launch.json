@@ -1,0 +1,78 @@
+﻿{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Backend API",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "console": "integratedTerminal",
+      "args": [
+        "backend.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--reload"
+      ]
+    },
+    {
+      "name": "Open Streamlit Email Checker",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "console": "integratedTerminal",
+      "args": [
+        "run",
+        "streamlit_app.py"
+      ]
+    },
+    {
+      "name": "Train Sample Model",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--data",
+        "data/raw/spam.csv"
+      ]
+    },
+    {
+      "name": "Evaluate Sample Model",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/evaluate.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--data",
+        "data/raw/spam.csv"
+      ]
+    },
+    {
+      "name": "Predict Sample Text",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/predict.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--text",
+        "You won a free iPhone, click now"
+      ]
+    },
+    {
+      "name": "Tune Review Threshold",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/tune_threshold.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--data",
+        "data/raw/spam.csv",
+        "--target-review-rate",
+        "0.20"
+      ]
+    }
+  ]
+}
+

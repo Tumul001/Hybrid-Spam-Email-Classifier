@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Model artifacts
+models/*.joblib
+models/*.json
+
+# Data outputs
+data/processed/*.csv
+data/raw/*.csv
+
+# OS/Editor
+.vscode/*.log
+.DS_Store
+Thumbs.db
