@@ -1,206 +1,226 @@
-# NLP_Novalantis — Codebase & Agent Chat Overview
-
-## What This Project Is
-
-A **spam vs not-spam email classifier** built incrementally through a GitHub Copilot agent conversation. It has evolved from a single training script into a **full-stack modular system**:
-
-- **ML Domain Layer** (`src/spam_detector/`) — core NLP logic
-- **FastAPI Backend** (`backend/`) — REST API exposing the ML functions
-- **Streamlit Frontend** (`streamlit_app.py`) — paste-and-check web UI
-- **CLI Scripts** (`scripts/`) — terminal wrappers for training, evaluation, prediction
-- **Tests** (`tests/`) — unit + smoke + API integration tests
+# NLP-Novalantis — Codebase Overview
+*Last updated: 2026-05-05 | Branch: `feature/custom-dataset`*
 
 ---
 
-## Project Structure at a Glance
+## Project Summary
+
+A hybrid email spam classifier combining **BERT-tiny** (HuggingFace pre-trained deep learning) with a **106-rule keyword engine** across 10 spam categories. No Kaggle dataset is used. The system requires no training — BERT is pre-trained and the keyword rules are hand-crafted.
+
+---
+
+## Architecture & Data Flow
+
+The system uses a **Zero-Shot Hybrid Architecture**. It does not require training a local machine learning model, nor does it rely on external datasets like Kaggle. Instead, it pipes incoming data through a pre-trained deep learning semantic core, and then refines the output using hand-crafted heuristics.
+
+### 1. High-Level System Flow
+```mermaid
+graph TD
+    A([Raw Email Text]) --> B{Parallel Processing}
+    
+    B -->|Semantic Core| C[BERT-tiny Model]
+    B -->|Threat Heuristics| D[106 Spam Rules]
+    B -->|Safe Heuristics| E[7 Ham Rules]
+    
+    C -->|Spam Probability 0.0 - 1.0| F{Hybrid Scorer}
+    D -->|Noisy-OR Boost +| F
+    E -->|Mathematical Discount -| F
+    
+    F --> G([Final Probability & Verdict])
+    
+    style A fill:#1e293b,stroke:#00f0ff,stroke-width:2px,color:#fff
+    style C fill:#3b82f6,stroke:#1d4ed8,color:#fff
+    style D fill:#ef4444,stroke:#991b1b,color:#fff
+    style E fill:#10b981,stroke:#065f46,color:#fff
+    style F fill:#8b5cf6,stroke:#5b21b6,color:#fff
+    style G fill:#1e293b,stroke:#00f0ff,stroke-width:2px,color:#fff
+```
+
+### 2. Scoring Logic (Mathematics)
+The hybrid scorer ensures that highly confident BERT predictions are respected, while edge-cases (like short transactional emails) are corrected by the heuristic engines.
+
+```mermaid
+flowchart TD
+    P[BERT Base Probability] --> IsSpamRule{Any Spam Rules Triggered?}
+    
+    IsSpamRule -- Yes --> CalcBoost[Calculate Combined Boost: <br/> 1 - Π 1 - spam_weight]
+    CalcBoost --> Blend[Blend Score: <br/> max BERT, 0.6*Boost + 0.4*BERT]
+    Blend --> IsHamRule
+    
+    IsSpamRule -- No --> IsHamRule{Any Ham Rules Triggered?}
+    
+    IsHamRule -- Yes --> ApplyDiscount[Apply Discount: <br/> Score * Π 1 - ham_discount]
+    ApplyDiscount --> Final[Final Probability]
+    
+    IsHamRule -- No --> Final
+    
+    Final --> Check{Probability >= 0.5?}
+    Check -- Yes --> Spam([🚨 Verdict: SPAM])
+    Check -- No --> Ham([✅ Verdict: NOT SPAM])
+
+    style P fill:#1e293b,color:#fff
+    style Blend fill:#8b5cf6,color:#fff
+    style ApplyDiscount fill:#10b981,color:#fff
+    style Spam fill:#ef4444,color:#fff
+    style Ham fill:#10b981,color:#fff
+```
+
+---
+
+## Repository Structure
 
 ```
 NLP_novalantis/
-├── src/spam_detector/          ← ML Domain Layer
-│   ├── preprocess.py           ← text cleaning + label normalization
-│   ├── model.py                ← TF-IDF + Logistic Regression pipeline
-│   ├── train.py                ← training orchestration + metrics saving
-│   ├── evaluate.py             ← evaluation + confusion matrix
-│   ├── predict.py              ← single + batch prediction, threshold logic
-│   ├── threshold.py            ← auto-tune review threshold to a target rate
-│   └── io_utils.py             ← save/load model + JSON helpers
+├── src/spam_detector/
+│   ├── __init__.py           # Package exports
+│   ├── bert_model.py         # HuggingFace pipeline wrapper (lazy-loaded singleton)
+│   ├── keyword_rules.py      # 106 keyword rules across 10 categories
+│   ├── predict.py            # Hybrid scorer: BERT + keyword boost
+│   └── preprocess.py         # clean_text() utility only
 │
-├── backend/                    ← FastAPI REST API
-│   ├── main.py                 ← FastAPI app + route definitions
-│   ├── service.py              ← calls spam_detector functions
-│   ├── schemas.py              ← Pydantic request/response schemas
-│   └── config.py               ← paths/defaults config
+├── backend/
+│   ├── __init__.py
+│   └── core.py               # Public API: predict, evaluate (13 metrics), get_rules_info
 │
-├── streamlit_app.py            ← Streamlit UI (calls backend via HTTP)
-├── scripts/                    ← CLI entry points
-│   ├── train.py
-│   ├── evaluate.py
-│   ├── predict.py
-│   └── tune_threshold.py
-├── tests/
-│   ├── test_preprocess.py
-│   ├── test_smoke_workflow.py
-│   ├── test_threshold.py
-│   └── api/test_backend_api.py
 ├── data/
-│   └── raw/spam.csv            ← your real dataset (Category, Message columns)
-├── models/                     ← saved artifacts (spam_model.joblib, metrics.json)
-└── requirements.txt
+│   ├── raw/
+│   │   └── custom_test_set.csv   # 50 hand-crafted emails (25 spam, 25 ham) — NO Kaggle
+│   └── processed/
+│       └── .gitkeep
+│
+├── tests/
+│   ├── test_keyword_rules.py  # 10 tests — rule count, matching, boost math
+│   ├── test_predict.py        # 9 tests  — BERT+keyword pipeline end-to-end
+│   └── test_preprocess.py     # 6 tests  — clean_text utility
+│
+├── scripts/
+│   └── predict.py             # CLI prediction script
+│
+├── streamlit_app.py           # Streamlit UI (3 tabs)
+├── requirements.txt           # pandas, streamlit, transformers, torch, pytest
+├── pyproject.toml
+└── .gitignore                 # data/raw/*.csv excluded (no dataset in git)
 ```
 
 ---
 
-## How the Data Flows
+## Key Files
 
-```
-spam.csv (Category, Message)
-  ↓  preprocess.py: auto-detects columns, cleans text, normalizes labels
-  ↓  model.py: TF-IDF (unigram+bigram) + LogisticRegression
-  ↓  save → spam_model.joblib + metrics.json
+### `src/spam_detector/bert_model.py`
+- Wraps `mrm8488/bert-tiny-finetuned-sms-spam-detection` from HuggingFace
+- Model: 17MB, CPU-friendly, cached in `~/.cache/huggingface/` after first download
+- Lazy-loaded singleton — loads once on first call
+- `bert_predict_text(text) → {"label": str, "spam_probability": float}`
 
-Streamlit UI  →  FastAPI (/api/v1/predict/text)
-              →  service.py  →  predict.py  →  spam_model.joblib
-              ←  { prediction, confidence, needs_review, review_threshold }
-```
+### `src/spam_detector/keyword_rules.py`
+- **106 SpamRule objects** compiled at import time
+- Categories and rule counts:
+
+| Category | Rules | Example signals |
+|---|---|---|
+| marketing | 23 | unsubscribe, newsletter, opt-out, flash sale, promo code |
+| phishing | 19 | verify account, account suspended, password expired, OTP |
+| scam | 15 | lottery winner, claim prize, advance fee, western union |
+| urgency | 9 | act now, limited time, final notice, hours left |
+| financial | 11 | make money fast, guaranteed returns, double your money |
+| health | 8 | weight loss pill, no prescription needed, miracle cure |
+| tech | 7 | your computer has a virus, call Microsoft support |
+| gambling | 4 | online casino, free spins, sports betting |
+| crypto | 5 | bitcoin investment, token sale, crypto doubler |
+| adult | 4 | adult dating, explicit invite, cam site |
+
+- `match_rules(text) → list[SpamRule]` — runs on raw text
+- `combined_keyword_boost(rules) → float` — noisy-OR: `1 - Π(1 - wᵢ)`, capped at 0.9999
+
+### `src/spam_detector/predict.py`
+- `predict_text(text, review_threshold=0.6) → dict` — single email hybrid prediction
+- `predict_batch(input_csv, output_csv, ...) → dict` — batch CSV prediction
+- Hybrid scoring: `final = max(bert_prob, 0.6*keyword_boost + 0.4*bert_prob)`
+- Always runs keyword rules on **raw text** (before cleaning strips signal words)
+- Returns: `prediction`, `confidence`, `needs_review`, `bert_spam_probability`, `email_signals_detected`
+
+### `backend/core.py`
+- `predict_single_email(text, threshold)` — wraps predict_text
+- `predict_csv_batch(input_csv, output_csv, ...)` — wraps predict_batch
+- `evaluate(test_data_path, ...)` — **13 evaluation metrics**:
+  - Core: accuracy, precision, recall, F1
+  - Extended: specificity, FPR, FNR, MCC (Matthews Correlation Coefficient), Cohen's Kappa
+  - Stats: avg_confidence, avg_bert_prob, pct_with_signals, category_hits per keyword category
+- `get_rules_info()` — returns all 106 rules grouped by category for UI display
+
+### `data/raw/custom_test_set.csv`
+- **50 hand-crafted emails** written from scratch (no Kaggle, no external datasets)
+- 25 spam: marketing newsletters, phishing, lottery scams, financial fraud, urgency
+- 25 ham: work emails, personal messages, academic reminders
+- Used exclusively for evaluation — not for training
 
 ---
 
-## The ML Pipeline (Core Logic)
+## Git Branches
 
-| Step | What Happens |
+| Branch | Purpose |
 |---|---|
-| **Column auto-detection** | Recognizes `Message`/`text`/`body` and `Category`/`label`/`class` automatically |
-| **Text cleaning** | Strips HTML, URLs, emails, punctuation → lowercase |
-| **Label normalization** | Maps `ham`→`not spam`, `spam`→`spam`, `0/1` supported |
-| **TF-IDF** | `max_features=8000`, unigram+bigram, English stop words |
-| **Logistic Regression** | `class_weight="balanced"`, `max_iter=400` |
-| **Confidence scoring** | `predict_proba` per prediction |
-| **Review threshold** | If confidence < threshold → flagged for manual review |
-| **Auto-tuning** | `tune_threshold.py` finds threshold that achieves ~N% review rate |
+| `main` | Original codebase with sklearn TF-IDF pipeline |
+| `feature/custom-dataset` | **Current active branch** — BERT + keyword rules, no Kaggle |
 
-**Threshold resolution priority:**
-1. Manual `--review-threshold` override
-2. Auto-loaded from `models/review_threshold.json` (if it exists)
-3. Default fallback: `0.6`
+### Latest commit on `feature/custom-dataset`
+```
+c28c9fd — feat: BERT + 106 keyword rules hybrid system, remove all sklearn/kaggle code
+- 28 files changed, 823 insertions(+), 5901 deletions(-)
+- 25/25 tests passing
+```
 
 ---
 
-## FastAPI Backend Endpoints
+## Test Suite (25 tests, all passing)
 
-| Method | Endpoint | What it does |
+| File | Tests | What it covers |
 |---|---|---|
-| GET | `/health` | Health check |
-| POST | `/api/v1/train` | Train model on a CSV file |
-| POST | `/api/v1/evaluate` | Evaluate model, return metrics |
-| POST | `/api/v1/predict/text` | Classify a single email text |
-| POST | `/api/v1/predict/batch` | Classify all rows in a CSV |
-| POST | `/api/v1/threshold/tune` | Find the best threshold for a target review rate |
+| `test_keyword_rules.py` | 10 | Rule count ≥50, category presence, specific rule matches, boost math |
+| `test_predict.py` | 9 | Output schema, label validity, newsletter/phishing/legit classification, threshold |
+| `test_preprocess.py` | 6 | HTML stripping, URL removal, lowercasing, whitespace collapse |
 
-> **Why FastAPI?** Separates the ML logic from the UI. The same backend can be called from Streamlit, a mobile app, a Chrome extension, or any HTTP client. Pydantic validates all inputs automatically.
+Run: `python -m pytest tests/ -v`
 
 ---
 
-## Streamlit UI (Frontend)
+## How to Run
 
-The UI (`streamlit_app.py`) **no longer imports ML code directly** — it sends HTTP requests to the FastAPI backend.
+```bash
+# Activate venv
+.venv\Scripts\activate
 
-Sections:
-- **Sidebar** — API URL, model path, threshold config, optional manual threshold slider
-- **Single Email** — text area → Check Email → shows SPAM/NOT SPAM + metrics
-- **Batch CSV** — CSV path input → Run Batch Prediction
-- **Training & Metrics** — Train / Evaluate / Tune Threshold buttons
-
----
-
-## Your Dataset (`data/raw/spam.csv`)
-
-- **Columns:** `Category` (spam/ham), `Message`
-- **Auto-detected** by `preprocess.py` — no renaming needed
-- Was previously: `sample_emails.csv` (AI-generated, now deleted)
-- This is the same dataset used in the **Demo Proj notebook** (`email-spam-detection-98-accuracy.ipynb`)
-
----
-
-## Demo Project vs Our Project
-
-| | Demo Notebook | Our Project |
-|---|---|---|
-| **Model** | CountVectorizer + MultinomialNB | TF-IDF + LogisticRegression |
-| **Accuracy on spam.csv** | ~98% | ~95% (more generalizable) |
-| **Structure** | Single `.ipynb` notebook | Modular backend + frontend |
-| **API** | None | FastAPI REST |
-| **UI** | None | Streamlit |
-| **Model saving** | No | Yes (`spam_model.joblib`) |
-| **Threshold logic** | No | Yes (auto-tune + review flags) |
-| **Tests** | No | Yes (10 passing tests) |
-| **Column flexibility** | Hardcoded | Auto-detects column names |
-
-**Recommendation from agent:** Keep TF-IDF + LR as default (better generalization); NB can be added as a "demo profile" option later.
-
----
-
-## What the Agent Chat Shows
-
-The `agent chat.txt` is the full VS Code GitHub Copilot agent session log (~3200 lines) showing:
-
-1. **Phase 1:** Initial spam NLP setup — simple TF-IDF + LR script
-2. **Phase 2:** Workspace scaffold — full project structure created
-3. **Phase 3:** Confidence scoring & review threshold logic added
-4. **Phase 4:** Auto-threshold tuning module added (`threshold.py`)
-5. **Phase 5:** Threshold auto-loading in prediction (no manual entry needed)
-6. **Phase 6:** Streamlit UI added for paste-and-check
-7. **Phase 7:** FastAPI backend + Streamlit refactored to call API
-8. **Phase 8:** Column mapping for `spam.csv` (`Category/Message` auto-detected)
-9. **Final user question:** "Will removing FastAPI make things simpler? But I need a normal backend"
-
----
-
-## Current Status & What's Incomplete
-
-> [!IMPORTANT]
-> The agent hit a **rate limit** at the end of the chat. The last user message asked:
-> *"will removing fastapi and rest make things simpler? but i need a normal backend"*
-> The agent responded but was cut off — **this is where you currently are**.
-
-> [!WARNING]
-> The column mapping for `spam.csv` was implemented in `preprocess.py` (it auto-detects `Category`/`Message`), but tests in `test_smoke_workflow.py` and `test_threshold.py` may still reference `sample_emails.csv` (old AI-generated data). You need to run `pytest` to verify.
-
----
-
-## How to Run Right Now
-
-### 1. Activate virtualenv
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### 2. Train the model on your real data
-```powershell
-python scripts/train.py --data data/raw/spam.csv
-```
-
-### 3. Start the backend
-```powershell
-uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-### 4. Start the frontend (new terminal)
-```powershell
+# Launch the Streamlit app
 streamlit run streamlit_app.py
-```
 
-Open `http://localhost:8501` in your browser → paste email → click **Check Email**
+# Run tests
+python -m pytest tests/ -v
 
-### 5. Run tests
-```powershell
-pytest
+# Quick CLI prediction
+python scripts/predict.py "Click here to claim your free prize now!"
 ```
 
 ---
 
-## Open Questions / Next Steps
+## What Was Removed (vs `main` branch)
 
-1. **Do you want to replace FastAPI with a simpler backend?** (e.g., Flask, or even no API — direct Python imports in Streamlit)
-2. **Do you want to add the NB model as an alternative** to compare accuracy vs your TF-IDF baseline?
-3. **Tests may be broken** since `sample_emails.csv` was deleted — run `pytest` and share output if you want fixes.
-4. **Batch CSV upload in Streamlit** (file upload widget + download button) — agent offered this but it wasn't implemented.
+| Removed | Reason |
+|---|---|
+| `spam.csv` (Kaggle) | Forbidden — not our dataset |
+| `model.py`, `train.py`, `threshold.py` | sklearn pipeline no longer needed |
+| `evaluate.py`, `io_utils.py` | sklearn helpers, no longer needed |
+| `backend/main.py`, `schemas.py`, `service.py`, `config.py` | FastAPI REST layer — overkill for local use |
+| `scripts/train.py`, `scripts/evaluate.py`, `scripts/tune_threshold.py` | No training in new system |
+| `Demo Proj/`, `agent chat.txt`, `codebase_overview.md` (root) | Junk / dev artifacts |
+
+---
+
+## Dependencies
+
+```
+pandas       — DataFrame handling for batch CSV
+streamlit    — Web UI
+transformers — HuggingFace BERT-tiny model
+torch        — PyTorch CPU backend for BERT
+pytest       — Test runner
+```
