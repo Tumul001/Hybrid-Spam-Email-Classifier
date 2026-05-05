@@ -226,6 +226,7 @@ with tab_single:
                 needs_review = bool(result["needs_review"])
                 bert_prob    = result.get("bert_spam_probability", 0.0)
                 signals      = result.get("email_signals_detected", [])
+                safe_signals = result.get("safe_signals_detected", [])
 
                 st.markdown("<div class='glass-panel'>", unsafe_allow_html=True)
                 
@@ -239,24 +240,30 @@ with tab_single:
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Final Confidence", f"{confidence:.1%}")
                 c2.metric("BERT Base Score", f"{bert_prob:.1%}")
-                c3.metric("Heuristic Hits", len(signals))
+                c3.metric("Heuristics Triggered", len(signals) + len(safe_signals))
                 c4.metric("Action Required", "⚠️ REVIEW" if needs_review else "✅ NONE")
 
                 # Keyword signal breakdown
-                if signals:
-                    cats = sorted({s["category"] for s in signals})
-                    st.warning(
-                        f"⚡ **Heuristic Boost Applied** — BERT alone scored: {bert_prob:.1%}. "
-                        f"Found **{len(signals)} signals** across: {', '.join(cats).upper()}."
-                    )
+                if signals or safe_signals:
+                    st.markdown("### Threat & Safe Signatures Detected")
                     
-                    st.markdown("### Threat Signatures Detected")
-                    for s in signals:
-                        st.markdown(
-                            f"- <span style='color:#ef4444;font-weight:bold;'>[{s['category'].upper()}]</span> "
-                            f"**`{s['name']}`** *(boost: +{s['weight']:.0%})* — {s['description']}",
-                            unsafe_allow_html=True
-                        )
+                    if signals:
+                        st.warning(f"🚨 **Threat Heuristics Applied** — Found **{len(signals)} signals**.")
+                        for s in signals:
+                            st.markdown(
+                                f"- <span style='color:#ef4444;font-weight:bold;'>[{s['category'].upper()}]</span> "
+                                f"**`{s['name']}`** *(boost: +{s['weight']:.0%})* — {s['description']}",
+                                unsafe_allow_html=True
+                            )
+                            
+                    if safe_signals:
+                        st.success(f"🛡️ **Safe Heuristics Applied** — Reduced spam probability to prevent false positive.")
+                        for s in safe_signals:
+                            st.markdown(
+                                f"- <span style='color:#10b981;font-weight:bold;'>[{s['category'].upper()}]</span> "
+                                f"**`{s['name']}`** *(discount: -{s['discount']:.0%})* — {s['description']}",
+                                unsafe_allow_html=True
+                            )
                 else:
                     st.info(f"🤖 Pure Semantic Verdict. No explicit heuristic signatures triggered. BERT probability: {bert_prob:.1%}")
 

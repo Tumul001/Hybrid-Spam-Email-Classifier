@@ -16,32 +16,34 @@ import pandas as pd
 from pathlib import Path
 
 from .bert_model import bert_predict_text
-from .keyword_rules import match_rules, combined_keyword_boost, SpamRule
+from .keyword_rules import match_spam_rules, match_ham_rules, combined_keyword_boost, SpamRule, HamRule
 
 
 DEFAULT_REVIEW_THRESHOLD = 0.6
 
 
-def _hybrid_score(bert_prob: float, text: str) -> tuple[float, list[SpamRule]]:
+def _hybrid_score(bert_prob: float, text: str) -> tuple[float, list[SpamRule], list[HamRule]]:
     """
-    Combine BERT probability with keyword rule boost.
-
-    Strategy (noisy-OR blend):
-    - Keywords run on RAW text (before cleaning strips signal words).
-    - If signals found: final = max(bert_prob, 0.6*keyword_boost + 0.4*bert_prob)
-    - If no signals:   final = bert_prob (BERT alone)
-
-    This ensures we never downgrade a confident BERT spam call, but we can
-    upgrade newsletters/phishing that BERT rates as borderline.
+    Combine BERT probability with SPAM keyword boost and HAM keyword discount.
     """
-    matched = match_rules(text)
-    if not matched:
-        return bert_prob, []
+    spam_matched = match_spam_rules(text)
+    ham_matched = match_ham_rules(text)
 
-    keyword_boost = combined_keyword_boost(matched)
-    blended = 0.6 * keyword_boost + 0.4 * bert_prob
-    final = max(bert_prob, blended)
-    return final, matched
+    # 1. Apply spam boost if any
+    if spam_matched:
+        keyword_boost = combined_keyword_boost(spam_matched)
+        blended = 0.6 * keyword_boost + 0.4 * bert_prob
+        final = max(bert_prob, blended)
+    else:
+        final = bert_prob
+
+    # 2. Apply ham discount if any
+    if ham_matched:
+        # Multiply final by (1 - discount) for each ham rule
+        for rule in ham_matched:
+            final *= (1.0 - rule.discount)
+
+    return final, spam_matched, ham_matched
 
 
 def predict_text(
@@ -57,12 +59,13 @@ def predict_text(
         needs_review        : bool  — True if confidence < review_threshold
         review_threshold    : float
         bert_spam_probability   : raw BERT output
-        email_signals_detected  : list of matched keyword rule dicts
+        email_signals_detected  : list of matched SPAM keyword rule dicts
+        safe_signals_detected   : list of matched HAM keyword rule dicts
     """
     bert_result = bert_predict_text(text)
     bert_prob = bert_result["spam_probability"]
 
-    final_prob, matched_rules = _hybrid_score(bert_prob, text)
+    final_prob, spam_rules, ham_rules = _hybrid_score(bert_prob, text)
 
     if final_prob >= 0.5:
         prediction = "spam"
@@ -84,8 +87,19 @@ def predict_text(
                 "category": r.category,
                 "description": r.description,
                 "weight": round(r.weight, 2),
+                "type": "spam",
             }
-            for r in matched_rules
+            for r in spam_rules
+        ],
+        "safe_signals_detected": [
+            {
+                "name": r.name,
+                "category": r.category,
+                "description": r.description,
+                "discount": round(r.discount, 2),
+                "type": "ham",
+            }
+            for r in ham_rules
         ],
     }
 

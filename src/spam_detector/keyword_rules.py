@@ -20,6 +20,15 @@ class SpamRule:
     pattern: re.Pattern
 
 
+@dataclass(frozen=True)
+class HamRule:
+    name: str
+    category: str
+    description: str
+    discount: float  # how much to reduce spam prob (0.0 to 1.0)
+    pattern: re.Pattern
+
+
 # (name, category, description, weight, regex)
 _RAW: list[tuple[str, str, str, float, str]] = [
 
@@ -165,10 +174,38 @@ CATEGORIES: list[str] = sorted({r.category for r in SPAM_RULES})
 RULE_COUNT: int = len(SPAM_RULES)
 
 
-def match_rules(text: str) -> list[SpamRule]:
-    """Run all rules against raw (uncleaned) text. Returns matched rules."""
+# ── HAM / SAFE SIGNALS ───────────────────────────────────────────────────
+# These reduce spam probability for legitimate emails that BERT mistakes for spam.
+_RAW_HAM: list[tuple[str, str, str, float, str]] = [
+    # Transactional (Receipts, Repayments, Orders)
+    ("transaction_id",      "transaction", "Contains a formal Transaction ID",                     0.60, r"\btransaction\s+id\s*:?\s*[a-zA-Z0-9-]+\b"),
+    ("repayment_success",   "transaction", "Legitimate loan/credit repayment success",             0.70, r"\brepayment\s+(of\s+)?.*?was\s+successful\b"),
+    ("order_confirmed",     "transaction", "Order confirmation language",                          0.60, r"\b(order\s+confirmed|order\s+received|thanks\s+for\s+your\s+order)\b"),
+    ("invoice_attached",    "transaction", "Standard B2B invoice language",                        0.50, r"\bplease\s+find\s+(attached\s+)?(the\s+)?invoice\b"),
+    ("receipt_enclosed",    "transaction", "Standard receipt language",                            0.50, r"\byour\s+receipt\s+is\s+(enclosed|attached)\b"),
+    
+    # Conversational (Human-to-human)
+    ("let_me_know",         "personal",    "Casual human conversational closing",                  0.40, r"\blet\s+me\s+know\b"),
+    ("sounds_good",         "personal",    "Casual conversational agreement",                      0.40, r"\bsounds\s+good\b"),
+]
+
+HAM_RULES: list[HamRule] = [
+    HamRule(
+        name=n, category=c, description=d, discount=w,
+        pattern=re.compile(pat, re.IGNORECASE | re.DOTALL)
+    ) for n, c, d, w, pat in _RAW_HAM
+]
+
+
+def match_spam_rules(text: str) -> list[SpamRule]:
+    """Run all SPAM rules against raw text."""
     raw = str(text or "")
     return [r for r in SPAM_RULES if r.pattern.search(raw)]
+
+def match_ham_rules(text: str) -> list[HamRule]:
+    """Run all HAM rules against raw text."""
+    raw = str(text or "")
+    return [r for r in HAM_RULES if r.pattern.search(raw)]
 
 
 def combined_keyword_boost(matched: list[SpamRule]) -> float:
