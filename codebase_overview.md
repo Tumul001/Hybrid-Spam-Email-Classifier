@@ -129,7 +129,7 @@ NLP_novalantis/
 | crypto | 5 | bitcoin investment, token sale, crypto doubler |
 | adult | 4 | adult dating, explicit invite, cam site |
 
-- `match_rules(text) → list[SpamRule]` — runs on raw text
+- `match_spam_rules(text) → list[SpamRule]` — runs on raw text
 - `combined_keyword_boost(rules) → float` — noisy-OR: `1 - Π(1 - wᵢ)`, capped at 0.9999
 
 ### `src/spam_detector/predict.py`

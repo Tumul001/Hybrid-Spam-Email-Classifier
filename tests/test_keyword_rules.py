@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
-from spam_detector.keyword_rules import match_rules, combined_keyword_boost, SPAM_RULES, RULE_COUNT
+from spam_detector.keyword_rules import match_spam_rules, combined_keyword_boost, SPAM_RULES, RULE_COUNT
 
 
 def test_rule_count_above_minimum():
@@ -15,27 +15,27 @@ def test_rule_count_above_minimum():
 
 
 def test_unsubscribe_is_marketing():
-    matched = match_rules("Click here to unsubscribe from our mailing list.")
+    matched = match_spam_rules("Click here to unsubscribe from our mailing list.")
     names = [r.name for r in matched]
     assert "unsubscribe" in names
 
 
 def test_phishing_account_suspended():
-    matched = match_rules("Your account has been suspended. Verify your identity now.")
+    matched = match_spam_rules("Your account has been suspended. Verify your identity now.")
     names = [r.name for r in matched]
     assert "account_suspended" in names
     assert "verify_account" in names
 
 
 def test_scam_lottery():
-    matched = match_rules("Congratulations! You have won the lottery sweepstakes prize!")
+    matched = match_spam_rules("Congratulations! You have won the lottery sweepstakes prize!")
     names = [r.name for r in matched]
     assert "you_have_won" in names
     assert "lottery_winner" in names
 
 
 def test_ham_no_signals():
-    matched = match_rules("Hi Sarah, can we reschedule the meeting to 3pm?")
+    matched = match_spam_rules("Hi Sarah, can we reschedule the meeting to 3pm?")
     assert len(matched) == 0, f"Expected 0 signals for normal email, got {[r.name for r in matched]}"
 
 

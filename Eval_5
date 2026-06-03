@@ -1,0 +1,10 @@
+Accuracy: 98.0%
+Recall (Sensitivity): 100.0% (We caught every single piece of spam in the test set).
+Precision: 96.2% (Out of 50 emails, we had only 1 false positive).
+F1 Score: 98.0%
+📊 Advanced Metrics
+Matthews Correlation Coefficient (MCC): 0.96 (Extremely high correlation between predicted and actual labels).
+Cohen’s Kappa: 0.96 (Excellent agreement).
+Specificity: 96.0% (Percentage of legitimate emails correctly identified).
+False Positive Rate (FPR): 4.0%
+False Negative Rate (FNR): 0.0% (Zero spam emails were missed).

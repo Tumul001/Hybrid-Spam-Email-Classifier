@@ -9,10 +9,6 @@ __pycache__/
 .venv/
 venv/
 
-# Model artifacts
-models/*.joblib
-models/*.json
-
 # Data outputs
 data/processed/*.csv
 data/raw/*.csv
