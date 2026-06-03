@@ -1,4 +1,4 @@
-﻿# NLP Novalantis - Hybrid Spam Email Classifier
+﻿# Hybrid Spam Email Classifier
 
 A zero-shot, hybrid spam classifier that combines a pre-trained BERT-tiny model with a hand-crafted keyword rules engine. It runs locally with no training step and exposes a Streamlit UI plus Python APIs for integration.
 
